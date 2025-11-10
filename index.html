@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Flappy Final</title>
+<style>
+  :root{--bg:#70c5ce;--panel:#ffffffa6}
+  body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);display:flex;flex-direction:column;align-items:center;padding:12px;gap:10px}
+  .panel{background:var(--panel);padding:10px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.08)}
+  .topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .controls{display:flex;gap:8px}
+  button{padding:8px 12px;border-radius:8px;border:0;background:#222;color:#fff;cursor:pointer}
+  button:hover{background:#444}
+  canvas{border-radius:10px;border:3px solid #333;background:linear-gradient(#aee2ff,#e6f7ff);display:block}
+  .uploads{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  label{font-size:13px;display:flex;flex-direction:column;gap:6px}
+  .thumb{width:54px;height:36px;object-fit:cover;border:1px solid #ccc;border-radius:6px;background:#fff}
+  .row{display:flex;gap:10px;align-items:center}
+  select,input[type="range"]{padding:6px;border-radius:6px;border:1px solid #ccc;background:#fff}
+  .status{font-size:13px;color:#111;margin-top:6px}
+  .small{font-size:12px;color:#333}
+</style>
+</head>
+<body>
+
+<div class="panel topbar">
+  <div class="controls">
+    <button id="startBtn" type="button">▶ Start</button>
+    <button id="pauseBtn" type="button">⏸ Pause</button>
+    <button id="restartBtn" type="button">🔁 Restart</button>
+  </div>
+
+  <div style="width:8px"></div>
+
+  <div style="display:flex;flex-direction:column;gap:6px">
+    <div class="small" style="font-weight:600">Difficulty</div>
+    <div class="row">
+      <label style="font-size:13px">Preset
+        <select id="preset">
+          <option value="easy">Easy</option>
+          <option value="normal">Normal</option>
+          <option value="hard">Hard</option>
+        </select>
+      </label>
+
+      <label>Pipe Gap <input id="gapRange" type="range" min="70" max="180" value="140"></label>
+      <label>Pipe Speed <input id="speedRange" type="range" min="1" max="4" step="0.25" value="1.6"></label>
+    </div>
+  </div>
+</div>
+
+<canvas id="gameCanvas" width="420" height="560" class="panel"></canvas>
+
+<div class="panel uploads">
+  <label>Bird image
+    <input id="birdUpload" type="file" accept="image/*">
+    <img id="birdPreview" class="thumb" alt="">
+  </label>
+
+  <label>Pipe image
+    <input id="pipeUpload" type="file" accept="image/*">
+    <img id="pipePreview" class="thumb" alt="">
+  </label>
+
+  <label>Background image
+    <input id="bgUpload" type="file" accept="image/*">
+    <img id="bgPreview" class="thumb" alt="">
+  </label>
+
+  <label>Flap sound
+    <input id="flapUpload" type="file" accept="audio/*">
+    <button id="playFlap" type="button" style="margin-top:6px">Preview Flap</button>
+  </label>
+
+  <label>Score sound
+    <input id="scoreUpload" type="file" accept="audio/*">
+    <button id="playScore" type="button" style="margin-top:6px">Preview Score</button>
+  </label>
+</div>
+
+<div class="panel status">
+  <div>Instructions: You can upload assets or skip. Click <strong>Start</strong> to begin. Press <strong>Space</strong> or click on canvas to flap.</div>
+  <div style="margin-top:6px">Tip: Choose <em>Easy</em> preset for a big gap & slower pipes (default).</div>
+  <div id="statusText" style="margin-top:6px;font-weight:700"></div>
+</div>
+
+<script>
+/* --------- Core variables & DOM refs --------- */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const restartBtn = document.getElementById('restartBtn');
+const statusText = document.getElementById('statusText');
+
+const gapRange = document.getElementById('gapRange');
+const speedRange = document.getElementById('speedRange');
+const preset = document.getElementById('preset');
+
+const birdUpload = document.getElementById('birdUpload');
+const pipeUpload = document.getElementById('pipeUpload');
+const bgUpload = document.getElementById('bgUpload');
+const flapUpload = document.getElementById('flapUpload');
+const scoreUpload = document.getElementById('scoreUpload');
+
+const birdPreview = document.getElementById('birdPreview');
+const pipePreview = document.getElementById('pipePreview');
+const bgPreview = document.getElementById('bgPreview');
+
+const playFlapBtn = document.getElementById('playFlap');
+const playScoreBtn = document.getElementById('playScore');
+
+/* --------- Default assets (shapes + beep fallback) --------- */
+let birdImg = null, pipeImg = null, bgImg = null;
+let flapHolder = { obj: null }, scoreHolder = { obj: null };
+
+/* WebAudio beep fallback (used if no audio uploaded) */
+function playBeep(freq = 600, dur = 0.07, vol = 0.12){
+  try {
+    const aCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = aCtx.createOscillator();
+    const g = aCtx.createGain();
+    o.type = 'sine';
+    o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(aCtx.destination);
+    o.start();
+    o.stop(aCtx.currentTime + dur);
+    setTimeout(()=>aCtx.close(), (dur+0.05)*1000);
+  } catch(e){
+    // ignore if audio blocked
+  }
+}
+
+/* --------- Game state --------- */
+let bird = { x: 86, y: 240, w: 36, h: 28, vel: 0 };
+let gravity = 0.44;
+let flapPower = -8;
+let pipes = [];
+let pipeSpeed = Number(speedRange.value);
+let pipeGap = Number(gapRange.value);
+let score = 0;
+let isRunning = false;
+let isPaused = false;
+let rafId = null;
+let frames = 0;
+
+/* --------- UI helpers --------- */
+function setStatus(txt){
+  statusText.textContent = txt;
+}
+setStatus('Idle - click Start');
+
+/* --------- Difficulty presets --------- */
+function applyPreset(name){
+  if(name === 'easy'){
+    gapRange.value = 140; speedRange.value = 1.4;
+  } else if(name === 'normal'){
+    gapRange.value = 115; speedRange.value = 2.0;
+  } else {
+    gapRange.value = 90; speedRange.value = 2.6;
+  }
+  pipeGap = Number(gapRange.value);
+  pipeSpeed = Number(speedRange.value);
+}
+preset.addEventListener('change', e => applyPreset(e.target.value));
+gapRange.addEventListener('input', e => pipeGap = Number(e.target.value));
+speedRange.addEventListener('input', e => pipeSpeed = Number(e.target.value));
+applyPreset('easy');
+
+/* --------- Upload handlers (preview + assign) --------- */
+function loadImageFile(inputEl, assignFn, previewEl){
+  inputEl.addEventListener('change', function(){
+    const file = this.files && this.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => assignFn(img);
+      img.src = e.target.result;
+      if(previewEl) previewEl.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function loadAudioFile(inputEl, holder){
+  inputEl.addEventListener('change', function(){
+    const file = this.files && this.files[0];
+    if(!file) return;
+    const url = URL.createObjectURL(file);
+    const a = new Audio(url);
+    a.preload = 'auto';
+    holder.obj = a;
+  });
+}
+loadImageFile(birdUpload, img => birdImg = img, birdPreview);
+loadImageFile(pipeUpload, img => pipeImg = img, pipePreview);
+loadImageFile(bgUpload, img => bgImg = img, bgPreview);
+loadAudioFile(flapUpload, flapHolder);
+loadAudioFile(scoreUpload, scoreHolder);
+
+playFlapBtn.addEventListener('click', ()=> {
+  if(flapHolder.obj){ flapHolder.obj.currentTime = 0; flapHolder.obj.play(); }
+  else playBeep(700, 0.08, 0.12);
+});
+playScoreBtn.addEventListener('click', ()=> {
+  if(scoreHolder.obj){ scoreHolder.obj.currentTime = 0; scoreHolder.obj.play(); }
+  else playBeep(900, 0.12, 0.14);
+});
+
+/* --------- Core rendering --------- */
+function clearAndBackground(){
+  if(bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+  else {
+    ctx.fillStyle = '#70c5ce'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(0,0,canvas.width,56);
+  }
+  // ground
+  ctx.fillStyle = '#e6fbff'; ctx.fillRect(0, canvas.height - 48, canvas.width, 48);
+}
+
+function drawBird(){
+  const rot = Math.max(Math.min(bird.vel / 12, 0.7), -0.7);
+  ctx.save();
+  ctx.translate(bird.x + bird.w/2, bird.y + bird.h/2);
+  ctx.rotate(rot);
+  if(birdImg) ctx.drawImage(birdImg, -bird.w/2, -bird.h/2, bird.w, bird.h);
+  else {
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath(); ctx.ellipse(0,0,bird.w/2,bird.h/2,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#ff8c00'; ctx.beginPath(); ctx.moveTo(bird.w/2,0); ctx.lineTo(bird.w/2+8,4); ctx.lineTo(bird.w/2+8,-4); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPipes(){
+  for(const p of pipes){
+    if(pipeImg) {
+      // we draw top and bottom with the same image; using stretching
+      ctx.drawImage(pipeImg, p.x, -2, p.w, p.top+2);
+      ctx.drawImage(pipeImg, p.x, p.bottom-2, p.w, canvas.height - p.bottom + 2);
+    } else {
+      ctx.fillStyle = '#2e8b57';
+      ctx.fillRect(p.x, 0, p.w, p.top);
+      ctx.fillRect(p.x, p.bottom, p.w, canvas.height - p.bottom);
+    }
+  }
+}
+
+function render(){
+  clearAndBackground();
+  drawPipes();
+  drawBird();
+  ctx.fillStyle = '#000'; ctx.font = '18px Arial';
+  ctx.fillText('Score: ' + score, 12, 26);
+  ctx.font = '12px Arial'; ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillText(isRunning ? (isPaused ? 'Paused' : 'Running') : 'Idle - Click Start', 12, 46);
+}
+
+/* --------- Game update --------- */
+function resetState(){
+  bird.y = canvas.height/2 - 20;
+  bird.vel = 0;
+  pipes = [];
+  score = 0;
+  frames = 0;
+}
+resetState();
+
+function spawnPipe(){
+  const top = Math.floor(Math.random() * 160) + 30;
+  const gap = pipeGap;
+  pipes.push({ x: canvas.width + 20, w: 56, top: top, bottom: top + gap, passed: false });
+}
+
+function update(){
+  bird.vel += gravity;
+  bird.y += bird.vel;
+
+  // move pipes
+  for(const p of pipes) p.x -= pipeSpeed;
+
+  // spawn controls
+  if(pipes.length === 0 || pipes[pipes.length - 1].x < canvas.width - 200) spawnPipe();
+
+  // remove off-screen
+  if(pipes[0] && pipes[0].x < -120) pipes.shift();
+
+  // collisions and scoring
+  for(const p of pipes){
+    // scoring
+    if(!p.passed && p.x + p.w < bird.x){
+      p.passed = true; score++;
+      if(scoreHolder.obj){ scoreHolder.obj.currentTime = 0; scoreHolder.obj.play(); }
+      else playBeep(940, 0.09, 0.12);
+    }
+    // collision
+    const hitX = bird.x + bird.w > p.x && bird.x < p.x + p.w;
+    const hitY = bird.y < p.top || bird.y + bird.h > p.bottom;
+    if(hitX && hitY){
+      stopGameAndReset();
+      return;
+    }
+  }
+
+  // ground or sky
+  if(bird.y + bird.h > canvas.height - 48 || bird.y < 0){
+    stopGameAndReset();
+  }
+}
+
+/* --------- Game loop control --------- */
+function gameLoop(){
+  if(!isRunning || isPaused) return;
+  frames++;
+  update();
+  render();
+  rafId = requestAnimationFrame(gameLoop);
+}
+
+function startGame(){
+  if(isRunning) return;
+  isRunning = true; isPaused = false;
+  resetState();
+  pipeGap = Number(gapRange.value);
+  pipeSpeed = Number(speedRange.value);
+  setStatusText('Running');
+  rafId = requestAnimationFrame(gameLoop);
+}
+
+function pauseGame(){
+  if(!isRunning) return;
+  isPaused = !isPaused;
+  setStatusText(isPaused ? 'Paused' : 'Running');
+  if(!isPaused) rafId = requestAnimationFrame(gameLoop);
+}
+
+function stopGameAndReset(){
+  isRunning = false; isPaused = false;
+  setStatusText('Hit! Reset');
+  // show final frame
+  render();
+  // small pause then reset visuals
+  setTimeout(()=>{ resetState(); render(); setStatusText('Idle - Click Start'); }, 250);
+}
+
+function setStatusText(txt){ setStatus(txt); }
+
+/* --------- Player controls: flap (space/click) --------- */
+function flap(){
+  if(!isRunning || isPaused) return;
+  bird.vel = flapPower;
+  if(flapHolder.obj){ flapHolder.obj.currentTime = 0; flapHolder.obj.play(); }
+  else playBeep(700, 0.07, 0.12);
+}
+
+/* keyboard and click handlers */
+window.addEventListener('keydown', (e) => {
+  if(e.code === 'Space'){
+    e.preventDefault();
+    flap();
+  }
+});
+canvas.addEventListener('mousedown', (e) => { flap(); });
+
+/* --------- Attach UI actions --------- */
+startBtn.addEventListener('click', () => { startGame(); });
+pauseBtn.addEventListener('click', () => { pauseGame(); });
+restartBtn.addEventListener('click', () => { stopGameAndReset(); });
+
+/* difficulty UI */
+preset.addEventListener('change', (e)=>{ applyPreset(e.target.value); });
+
+/* ensure UI sliders update runtime values */
+gapRange.addEventListener('input', ()=> pipeGap = Number(gapRange.value));
+speedRange.addEventListener('input', ()=> pipeSpeed = Number(speedRange.value));
+
+/* final render loop before start: show background & bird */
+render();
+
+</script>
+</body>
+</html>
